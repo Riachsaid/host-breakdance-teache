@@ -1,7 +1,9 @@
-import { hasLifetimePremium } from './authStore';
+import { hasLifetimePremium, getAuthEmail } from './authStore';
+import { supabase } from './supabase';
 
 const PREMIUM_KEY = 'ghost_break_premium';
 const PENDING_TX_KEY = 'ghost_break_pending_tx';
+const SUPABASE_CACHE_KEY = 'ghost_break_supabase_cache';
 
 export interface PremiumState {
   active: boolean;
@@ -29,6 +31,8 @@ const DEFAULT_STATE: PremiumState = {
   paymentMethod: null,
 };
 
+let _cachedServerResponse: PremiumState | null = null;
+
 function readPremium(): PremiumState {
   try {
     const raw = localStorage.getItem(PREMIUM_KEY);
@@ -47,8 +51,53 @@ function writePremium(state: PremiumState): boolean {
   }
 }
 
+async function fetchServerPremium(): Promise<PremiumState | null> {
+  const email = getAuthEmail();
+  if (!email) return null;
+  try {
+    const { data, error } = await supabase
+      .rpc('sync_premium_status', { p_user_id: email } as any);
+    if (error) return null;
+    if (data?.active) {
+      const result: PremiumState = {
+        active: true,
+        plan: data.plan ?? null,
+        activatedAt: null,
+        expiresAt: data.expires_at ?? null,
+        txid: data.txid ?? null,
+        paymentMethod: data.payment_method ?? null,
+      };
+      try { localStorage.setItem(SUPABASE_CACHE_KEY, JSON.stringify(result)); } catch {}
+      _cachedServerResponse = result;
+      return result;
+    }
+  } catch {}
+  return null;
+}
+
 export function isPremium(): boolean {
   if (hasLifetimePremium()) return true;
+  if (_cachedServerResponse?.active) {
+    if (_cachedServerResponse.expiresAt && new Date(_cachedServerResponse.expiresAt) < new Date()) {
+      _cachedServerResponse = null;
+      writePremium({ ...DEFAULT_STATE });
+      return false;
+    }
+    return true;
+  }
+  try {
+    const cached = localStorage.getItem(SUPABASE_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached) as PremiumState;
+      if (parsed.active) {
+        if (parsed.expiresAt && new Date(parsed.expiresAt) < new Date()) {
+          localStorage.removeItem(SUPABASE_CACHE_KEY);
+        } else {
+          return true;
+        }
+      }
+    }
+  } catch {}
   const state = readPremium();
   if (!state.active) return false;
   if (state.expiresAt && new Date(state.expiresAt) < new Date()) {
@@ -70,7 +119,19 @@ export function getPremiumState(): PremiumState {
       paymentMethod: null,
     };
   }
+  if (_cachedServerResponse?.active) return _cachedServerResponse;
+  try {
+    const cached = localStorage.getItem(SUPABASE_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached) as PremiumState;
+      if (parsed.active) return parsed;
+    }
+  } catch {}
   return readPremium();
+}
+
+export async function refreshServerPremium(): Promise<void> {
+  await fetchServerPremium();
 }
 
 export function activatePremium(
@@ -84,6 +145,18 @@ export function activatePremium(
       ? new Date(now.getFullYear() + 1, now.getMonth(), now.getDate()).toISOString()
       : new Date(now.getFullYear(), now.getMonth() + 1, now.getDate()).toISOString();
 
+  if (getAuthEmail()) {
+    supabase.from('subscriptions').insert({
+      user_id: getAuthEmail(),
+      plan,
+      txid,
+      payment_method: method,
+      expires_at: expiresAt,
+    }).then(({ error }) => {
+      if (error) console.warn('Supabase insert failed, saved locally:', error.message);
+    });
+  }
+
   return writePremium({
     active: true,
     plan,
@@ -95,6 +168,8 @@ export function activatePremium(
 }
 
 export function deactivatePremium(): boolean {
+  _cachedServerResponse = null;
+  try { localStorage.removeItem(SUPABASE_CACHE_KEY); } catch {}
   return writePremium(DEFAULT_STATE);
 }
 
