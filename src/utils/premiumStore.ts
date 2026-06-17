@@ -1,3 +1,5 @@
+import { hasLifetimePremium } from './authStore';
+
 const PREMIUM_KEY = 'ghost_break_premium';
 const PENDING_TX_KEY = 'ghost_break_pending_tx';
 
@@ -46,6 +48,7 @@ function writePremium(state: PremiumState): boolean {
 }
 
 export function isPremium(): boolean {
+  if (hasLifetimePremium()) return true;
   const state = readPremium();
   if (!state.active) return false;
   if (state.expiresAt && new Date(state.expiresAt) < new Date()) {
@@ -57,6 +60,16 @@ export function isPremium(): boolean {
 }
 
 export function getPremiumState(): PremiumState {
+  if (hasLifetimePremium()) {
+    return {
+      active: true,
+      plan: 'annual',
+      activatedAt: new Date().toISOString(),
+      expiresAt: null,
+      txid: 'ADMIN_LIFETIME_OVERRIDE',
+      paymentMethod: null,
+    };
+  }
   return readPremium();
 }
 

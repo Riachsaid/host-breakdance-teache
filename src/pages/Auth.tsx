@@ -25,7 +25,7 @@ export default function Auth() {
       setError('');
       setSuccess('');
 
-      if (!email.includes('@') || email.length < 5) {
+      if (email !== 'admin' && (!email.includes('@') || email.length < 5)) {
         setError('Please enter a valid email address');
         return;
       }
